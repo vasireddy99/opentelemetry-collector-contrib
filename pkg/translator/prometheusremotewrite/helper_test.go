@@ -205,7 +205,7 @@ func Test_timeSeriesSignature(t *testing.T) {
 	// run tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.EqualValues(t, tt.want, timeSeriesSignature(tt.metric.Type().String(), &tt.lbs))
+			assert.EqualValues(t, tt.want, TimeSeriesSignature(tt.metric.Type().String(), &tt.lbs))
 		})
 	}
 }
@@ -690,19 +690,19 @@ func TestAddSingleSummaryDataPoint(t *testing.T) {
 					{Name: model.MetricNameLabel, Value: "test_summary" + sumStr},
 				}
 				return map[string]*prompb.TimeSeries{
-					timeSeriesSignature(pmetric.MetricTypeSummary.String(), &labels): {
+					TimeSeriesSignature(pmetric.MetricTypeSummary.String(), &labels): {
 						Labels: labels,
 						Samples: []prompb.Sample{
 							{Value: 0, Timestamp: convertTimeStamp(ts)},
 						},
 					},
-					timeSeriesSignature(pmetric.MetricTypeSummary.String(), &sumLabels): {
+					TimeSeriesSignature(pmetric.MetricTypeSummary.String(), &sumLabels): {
 						Labels: sumLabels,
 						Samples: []prompb.Sample{
 							{Value: 0, Timestamp: convertTimeStamp(ts)},
 						},
 					},
-					timeSeriesSignature(pmetric.MetricTypeSummary.String(), &createdLabels): {
+					TimeSeriesSignature(pmetric.MetricTypeSummary.String(), &createdLabels): {
 						Labels: createdLabels,
 						Samples: []prompb.Sample{
 							{Value: float64(convertTimeStamp(ts))},
@@ -731,13 +731,13 @@ func TestAddSingleSummaryDataPoint(t *testing.T) {
 					{Name: model.MetricNameLabel, Value: "test_summary" + sumStr},
 				}
 				return map[string]*prompb.TimeSeries{
-					timeSeriesSignature(pmetric.MetricTypeSummary.String(), &labels): {
+					TimeSeriesSignature(pmetric.MetricTypeSummary.String(), &labels): {
 						Labels: labels,
 						Samples: []prompb.Sample{
 							{Value: 0, Timestamp: convertTimeStamp(ts)},
 						},
 					},
-					timeSeriesSignature(pmetric.MetricTypeSummary.String(), &sumLabels): {
+					TimeSeriesSignature(pmetric.MetricTypeSummary.String(), &sumLabels): {
 						Labels: sumLabels,
 						Samples: []prompb.Sample{
 							{Value: 0, Timestamp: convertTimeStamp(ts)},
@@ -800,19 +800,19 @@ func TestAddSingleHistogramDataPoint(t *testing.T) {
 					{Name: model.BucketLabel, Value: "+Inf"},
 				}
 				return map[string]*prompb.TimeSeries{
-					timeSeriesSignature(pmetric.MetricTypeHistogram.String(), &infLabels): {
+					TimeSeriesSignature(pmetric.MetricTypeHistogram.String(), &infLabels): {
 						Labels: infLabels,
 						Samples: []prompb.Sample{
 							{Value: 0, Timestamp: convertTimeStamp(ts)},
 						},
 					},
-					timeSeriesSignature(pmetric.MetricTypeHistogram.String(), &labels): {
+					TimeSeriesSignature(pmetric.MetricTypeHistogram.String(), &labels): {
 						Labels: labels,
 						Samples: []prompb.Sample{
 							{Value: 0, Timestamp: convertTimeStamp(ts)},
 						},
 					},
-					timeSeriesSignature(pmetric.MetricTypeHistogram.String(), &createdLabels): {
+					TimeSeriesSignature(pmetric.MetricTypeHistogram.String(), &createdLabels): {
 						Labels: createdLabels,
 						Samples: []prompb.Sample{
 							{Value: float64(convertTimeStamp(ts))},
@@ -842,13 +842,13 @@ func TestAddSingleHistogramDataPoint(t *testing.T) {
 					{Name: model.BucketLabel, Value: "+Inf"},
 				}
 				return map[string]*prompb.TimeSeries{
-					timeSeriesSignature(pmetric.MetricTypeHistogram.String(), &infLabels): {
+					TimeSeriesSignature(pmetric.MetricTypeHistogram.String(), &infLabels): {
 						Labels: infLabels,
 						Samples: []prompb.Sample{
 							{Value: 0, Timestamp: convertTimeStamp(ts)},
 						},
 					},
-					timeSeriesSignature(pmetric.MetricTypeHistogram.String(), &labels): {
+					TimeSeriesSignature(pmetric.MetricTypeHistogram.String(), &labels): {
 						Labels: labels,
 						Samples: []prompb.Sample{
 							{Value: 0, Timestamp: convertTimeStamp(ts)},

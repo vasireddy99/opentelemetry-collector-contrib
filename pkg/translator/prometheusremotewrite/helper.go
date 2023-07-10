@@ -75,7 +75,7 @@ func addSample(tsMap map[string]*prompb.TimeSeries, sample *prompb.Sample, label
 		return ""
 	}
 
-	sig := timeSeriesSignature(datatype, &labels)
+	sig := TimeSeriesSignature(datatype, &labels)
 	ts, ok := tsMap[sig]
 
 	if ok {
@@ -129,7 +129,7 @@ func addExemplar(tsMap map[string]*prompb.TimeSeries, bucketBounds []bucketBound
 //
 // the label slice should not contain duplicate label names; this method sorts the slice by label name before creating
 // the signature.
-func timeSeriesSignature(datatype string, labels *[]prompb.Label) string {
+func TimeSeriesSignature(datatype string, labels *[]prompb.Label) string {
 	b := strings.Builder{}
 	b.WriteString(datatype)
 
@@ -502,7 +502,7 @@ func addCreatedTimeSeriesIfNeeded(
 	startTimestamp pcommon.Timestamp,
 	metricType string,
 ) {
-	sig := timeSeriesSignature(metricType, &labels)
+	sig := TimeSeriesSignature(metricType, &labels)
 	if _, ok := series[sig]; !ok {
 		series[sig] = &prompb.TimeSeries{
 			Labels: labels,

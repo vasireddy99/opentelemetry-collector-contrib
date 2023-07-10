@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"net/http"
@@ -159,28 +160,80 @@ func validateAndSanitizeExternalLabels(cfg *Config) (map[string]string, error) {
 	return sanitizedLabels, nil
 }
 
+func getDataType(ts *prompb.TimeSeries) string {
+	for _, label := range ts.Labels {
+		if label.Name == "__name__" {
+			metricType := label.Value
+			switch metricType {
+			case "counter":
+				return "counter"
+			case "gauge":
+				return "gauge"
+			case "summary":
+				return "summary"
+			case "histogram":
+				return "histogram"
+			}
+			break
+		}
+	}
+	return ""
+}
+
 func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*prompb.TimeSeries) error {
 	// There are no metrics to export, so return.
 	if len(tsMap) == 0 {
 		return nil
 	}
 
-	// Calls the helper function to convert and batch the TsMap to the desired format
-	requests, err := batchTimeSeries(tsMap, maxBatchByteSize)
-	if err != nil {
-		return err
-	}
-	if !prwe.walEnabled() {
-		// Perform a direct export otherwise.
-		return prwe.export(ctx, requests)
+	// Create N arrays of time series.
+	partitionedTS := make([][]*prompb.TimeSeries, prwe.concurrency)
+	for _, ts := range tsMap {
+		// Calculate the signature hash of the time series.
+		signature := prometheusremotewrite.TimeSeriesSignature( getDataType(ts),&ts.Labels)
+
+		// Calculate the hash value based on the signature.
+		hash := crc32.ChecksumIEEE([]byte(signature))
+
+		// Convert the hash value to an integer.
+		hashInt := int(hash)
+
+		// Determine the array index based on the hash value.
+		index := hashInt % prwe.concurrency
+
+		// Append the time series to the corresponding array.
+		partitionedTS[index] = append(partitionedTS[index], ts)
 	}
 
-	// Otherwise the WAL is enabled, and just persist the requests to the WAL
-	// and they'll be exported in another goroutine to the RemoteWrite endpoint.
-	if err = prwe.wal.persistToWAL(requests); err != nil {
-		return consumererror.NewPermanent(err)
+	// Export each partitioned array of time series.
+	var errs error
+	for _, tsArray := range partitionedTS {
+		// Create a new map for the partitioned time series.
+		partitionedMap := make(map[string]*prompb.TimeSeries)
+		for _, ts := range tsArray {
+			partitionedMap[ts.String()] = ts
+		}
+
+		// Calls the helper function to convert and batch the partitioned TsMap to the desired format
+		requests, err := batchTimeSeries(partitionedMap, maxBatchByteSize)
+		if err != nil {
+			errs = multierr.Append(errs, err)
+			continue
+		}
+
+		if !prwe.walEnabled() {
+			// Perform a direct export otherwise.
+			errs = multierr.Append(errs, prwe.export(ctx, requests))
+			continue
+		}
+
+		// Otherwise, the WAL is enabled, and just persist the requests to the WAL
+		// and they'll be exported in another goroutine to the RemoteWrite endpoint.
+		if err := prwe.wal.persistToWAL(requests); err != nil {
+			errs = multierr.Append(errs, consumererror.NewPermanent(err))
+		}
 	}
-	return nil
+	return errs
 }
 
 // export sends a Snappy-compressed WriteRequest containing TimeSeries to a remote write endpoint in order
