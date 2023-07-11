@@ -171,7 +171,7 @@ func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*pro
 	for _, ts := range tsMap {
 
 		// Calculate the signature hash of the time series.
-		signature := prometheusremotewrite.TimeSeriesSignature( "" ,&ts.Labels)
+		signature := prometheusremotewrite.TimeSeriesSignature("", &ts.Labels)
 
 		// Calculate the hash value based on the signature.
 		hash := crc32.ChecksumIEEE([]byte(signature))
@@ -186,8 +186,30 @@ func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*pro
 		partitionedTS[index] = append(partitionedTS[index], ts)
 	}
 
-	// Export each partitioned array of time series.
-	for _, tsArray := range partitionedTS {
+	// Create channels for each partitioned array.
+	channels := make([]chan []*prompb.TimeSeries, len(partitionedTS))
+	for i := range channels {
+		channels[i] = make(chan []*prompb.TimeSeries)
+	}
+
+	// Create a worker goroutine for each channel.
+	for i, tsArray := range partitionedTS {
+		go prwe.exportWorker(ctx, channels[i])
+		channels[i] <- tsArray // Send the partitioned array to the corresponding channel
+		close(channels[i])    // Close the channel after sending the data
+	}
+
+	// Wait for all workers to finish
+	for _, ch := range channels {
+		<-ch
+	}
+
+	return nil
+}
+
+// exportWorker is the worker function that consumes a channel of partitioned time series and performs the export.
+func (prwe *prwExporter) exportWorker(ctx context.Context, tsArrayChan <-chan []*prompb.TimeSeries) error {
+	for tsArray := range tsArrayChan {
 		// Create a new map for the partitioned time series.
 		partitionedMap := make(map[string]*prompb.TimeSeries)
 		for _, ts := range tsArray {
@@ -197,19 +219,25 @@ func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*pro
 		// Calls the helper function to convert and batch the partitioned TsMap to the desired format
 		requests, err := batchTimeSeries(partitionedMap, maxBatchByteSize)
 		if err != nil {
+			prwe.wg.Done()
 			return err
-		}
-		if !prwe.walEnabled() {
+		} else if !prwe.walEnabled() {
 			// Perform a direct export otherwise.
-			return prwe.export(ctx, requests)
-		}
-
-		// Otherwise the WAL is enabled, and just persist the requests to the WAL
-		// and they'll be exported in another goroutine to the RemoteWrite endpoint.
-		if err = prwe.wal.persistToWAL(requests); err != nil {
-			return consumererror.NewPermanent(err)
+			if err := prwe.export(ctx, requests); err != nil {
+				prwe.wg.Done()
+				return err
+			}
+		} else {
+			// Otherwise, the WAL is enabled, and just persist the requests to the WAL
+			// and they'll be exported in another goroutine to the RemoteWrite endpoint.
+			if err := prwe.wal.persistToWAL(requests); err != nil {
+				prwe.wg.Done()
+				return err
+			}
 		}
 	}
+
+	prwe.wg.Done()
 	return nil
 }
 
