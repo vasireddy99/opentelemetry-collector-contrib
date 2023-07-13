@@ -6,6 +6,7 @@ package prometheusremotewriteexporter // import "github.com/open-telemetry/opent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -13,6 +14,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +81,7 @@ func newPRWExporter(cfg *Config, set exporter.CreateSettings) (*prwExporter, err
 			AddMetricSuffixes:   cfg.AddMetricSuffixes,
 		},
 	}
+
 	if cfg.WAL == nil {
 		return prwe, nil
 	}
@@ -87,6 +90,7 @@ func newPRWExporter(cfg *Config, set exporter.CreateSettings) (*prwExporter, err
 	if err != nil {
 		return nil, err
 	}
+
 	return prwe, nil
 }
 
@@ -160,18 +164,29 @@ func validateAndSanitizeExternalLabels(cfg *Config) (map[string]string, error) {
 	return sanitizedLabels, nil
 }
 
-func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*prompb.TimeSeries) error {
-	// There are no metrics to export, so return.
-	if len(tsMap) == 0 {
-		return nil
+//Signature for the time series
+func tSSignature(labels *[]prompb.Label) string {
+	var labelPairs []string
+	for _, label := range *labels {
+		labelPairs = append(labelPairs, fmt.Sprintf("%s=%s", label.Name, label.Value ))
 	}
 
-	// Create N arrays of time series equal to length of time series.
+	// Sort the labels.
+	sort.Strings(labelPairs)
+
+	sign := strings.Join(labelPairs, ",")
+	hashDigest := sha256.Sum256([]byte(sign))
+
+	return fmt.Sprintf("%x", hashDigest)
+}
+
+//This function takes a map of time series as input and returns a slice of arrays, each array contains the time series with the same hash value.
+func partitionTimeSeries(tsMap map[string]*prompb.TimeSeries) [][]*prompb.TimeSeries {
 	partitionedTS := make([][]*prompb.TimeSeries, len(tsMap))
 	for _, ts := range tsMap {
 
 		// Calculate the signature hash of the time series.
-		signature := prometheusremotewrite.TimeSeriesSignature("", &ts.Labels)
+		signature := tSSignature(&ts.Labels)
 
 		// Calculate the hash value based on the signature.
 		hash := crc32.ChecksumIEEE([]byte(signature))
@@ -186,6 +201,17 @@ func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*pro
 		partitionedTS[index] = append(partitionedTS[index], ts)
 	}
 
+	return partitionedTS
+}
+
+func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*prompb.TimeSeries) error {
+	// There are no metrics to export, so return.
+	if len(tsMap) == 0 {
+		return nil
+	}
+
+	partitionedTS := partitionTimeSeries(tsMap)
+
 	// Create channels for each partitioned array.
 	channels := make([]chan []*prompb.TimeSeries, len(partitionedTS))
 	for i := range channels {
@@ -194,6 +220,7 @@ func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*pro
 
 	// Create a worker goroutine for each channel.
 	for i, tsArray := range partitionedTS {
+		prwe.wg.Add(1)
 		go prwe.exportWorker(ctx, channels[i])
 		channels[i] <- tsArray // Send the partitioned array to the corresponding channel
 		close(channels[i])    // Close the channel after sending the data
@@ -322,6 +349,7 @@ func (prwe *prwExporter) execute(ctx context.Context, writeReq *prompb.WriteRequ
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
 	rerr := fmt.Errorf("remote write returned HTTP status %v; err = %w: %s", resp.Status, err, body)
 	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+		// Return a non-permanent error for 5xx status codes to indicate that it's recoverable
 		return rerr
 	}
 	return consumererror.NewPermanent(rerr)

@@ -30,7 +30,7 @@ func addSingleExponentialHistogramDataPoint(
 		model.MetricNameLabel, metric,
 	)
 
-	sig := TimeSeriesSignature(
+	sig := timeSeriesSignature(
 		pmetric.MetricTypeExponentialHistogram.String(),
 		&labels,
 	)

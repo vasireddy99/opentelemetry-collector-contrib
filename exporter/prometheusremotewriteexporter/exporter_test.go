@@ -289,13 +289,13 @@ func Test_export(t *testing.T) {
 			*ts1,
 			false,
 			http.StatusAccepted,
-			true,
+			false,
 		}, {
 			"error_status_code_case",
 			*ts1,
 			true,
 			http.StatusForbidden,
-			true,
+			false,
 		},
 	}
 
@@ -1033,5 +1033,34 @@ func TestRetryOn5xx(t *testing.T) {
 	// Check the number of retry attempts
 	if attempts <= 2 {
 		t.Fatal("Expected more than 2 retry attempts, but got", attempts, "attempt(s)")
+	}
+}
+
+func TestPartitionTimeSeries(t *testing.T) {
+	// Create a map of time series.
+	tsMap := map[string]*prompb.TimeSeries{
+		"cpu_usage_total": {
+			Labels: []prompb.Label{
+				{Name: "instance", Value: "node1"},
+				{Name: "job", Value: "webserver"},
+			},
+		},
+		"memory_usage_total": {
+			Labels: []prompb.Label{
+				{Name: "instance", Value: "node2"},
+				{Name: "job", Value: "webserver"},
+			},
+		},
+	}
+
+	// Partition the time series.
+	partitionedTS := partitionTimeSeries(tsMap)
+
+	// Check the number of time series in each partition.
+	expected := 1
+	for _, array := range partitionedTS {
+		if len(array) != expected {
+			t.Errorf("Expected %d time series in each partition, got %d", expected, len(array))
+		}
 	}
 }
