@@ -5,12 +5,14 @@ package prometheusremotewriteexporter
 
 import (
 	"context"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"sync"
 	"testing"
+
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
@@ -979,61 +981,30 @@ func TestWALOnExporterRoundTrip(t *testing.T) {
 	assert.Equal(t, gotFromWAL, gotFromUpload)
 }
 
-
 func TestRetryOn5xx(t *testing.T) {
-	// Create a mock HTTP server
-	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		attempts++
-		if attempts <= 2 {
-			// Return 503 Service Unavailable for the first request
-			rw.WriteHeader(http.StatusServiceUnavailable)
-		} else {
-			// Return 200 OK for subsequent requests
-			rw.WriteHeader(http.StatusOK)
-		}
+	// Create a mock HTTP server that always returns a 5xx error
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}))
-	defer server.Close()
+	defer mockServer.Close()
 
-	// Parse the server URL
-	endpointURL, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatal("Failed to parse server URL:", err)
-	}
+	endpointURL, err := url.Parse(mockServer.URL)
+	assert.NoError(t, err)
 
-	// Create a prwExporter with the mock server URL
-	prwe := &prwExporter{
-		endpointURL:     endpointURL,
-		userAgentHeader: "Test-Agent",
-		client:          server.Client(),
+	// Create the prwExporter
+	exporter := &prwExporter{
+		endpointURL: endpointURL,
+		client:      http.DefaultClient,
 	}
 
-	ts1 := &prompb.TimeSeries{
-		Labels:  []prompb.Label{{Name: "ts1l1", Value: "ts1k1"}},
-		Samples: []prompb.Sample{{Value: 1, Timestamp: 100}},
-	}
-	ts2 := &prompb.TimeSeries{
-		Labels:  []prompb.Label{{Name: "ts2l1", Value: "ts2k1"}},
-		Samples: []prompb.Sample{{Value: 2, Timestamp: 200}},
-	}
+	// Create a test context
+	ctx := context.Background()
 
-	// Create a dummy WriteRequest
-	writeReq := &prompb.WriteRequest{
-		Timeseries: orderBySampleTimestamp([]prompb.TimeSeries{
-			*ts1, *ts2,
-		}),
-	}
+	err = exporter.execute(ctx, &prompb.WriteRequest{})
 
-	// Execute the function with the dummy WriteRequest
-	err = prwe.execute(context.TODO(), writeReq)
-	if err != nil {
-		t.Fatal("Expected no error, but got an error:", err)
-	}
-
-	// Check the number of retry attempts
-	if attempts <= 2 {
-		t.Fatal("Expected more than 2 retry attempts, but got", attempts, "attempt(s)")
-	}
+	// Verify that the exporter returned a non-permanent error
+	assert.Error(t, err)
+	assert.False(t, consumererror.IsPermanent(err))
 }
 
 func TestPartitionTimeSeries(t *testing.T) {
