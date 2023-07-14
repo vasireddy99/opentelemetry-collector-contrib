@@ -6,14 +6,12 @@ package prometheusremotewriteexporter // import "github.com/open-telemetry/opent
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -163,7 +161,7 @@ func validateAndSanitizeExternalLabels(cfg *Config) (map[string]string, error) {
 	return sanitizedLabels, nil
 }
 
-//Signature for the time series
+/*//Signature for the time series
 func tSSignature(labels *[]prompb.Label) string {
 	var labelPairs []string
 	for _, label := range *labels {
@@ -177,7 +175,7 @@ func tSSignature(labels *[]prompb.Label) string {
 	hashDigest := sha256.Sum256([]byte(sign))
 
 	return fmt.Sprintf("%x", hashDigest)
-}
+}*/
 
 //This function takes a map of time series as input and returns a slice of arrays, each array contains the time series with the same hash value.
 func partitionTimeSeries(tsMap map[string]*prompb.TimeSeries) [][]*prompb.TimeSeries {
@@ -190,6 +188,8 @@ func partitionTimeSeries(tsMap map[string]*prompb.TimeSeries) [][]*prompb.TimeSe
 	return partitionedTS
 }
 
+// handleExport handles the export of metrics by creating worker goroutines and channels.
+// It waits for all workers to finish and returns an error if any worker encountered one.
 func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*prompb.TimeSeries) error {
 	// There are no metrics to export, so return.
 	if len(tsMap) == 0 {
@@ -198,30 +198,44 @@ func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*pro
 
 	partitionedTS := partitionTimeSeries(tsMap)
 
-	// Create channels for each partitioned array.
+	// Create channels and error channel for each partitioned array.
 	channels := make([]chan []*prompb.TimeSeries, len(partitionedTS))
-	for i := range channels {
-		channels[i] = make(chan []*prompb.TimeSeries)
-	}
+	errCh := make(chan error, len(partitionedTS))
+
+	// Create a wait group to wait for all workers to finish
+	var wg sync.WaitGroup
+	wg.Add(len(partitionedTS))
 
 	// Create a worker goroutine for each channel.
-	for i, tsArray := range partitionedTS {
-		prwe.wg.Add(1)
-		go prwe.exportWorker(ctx, channels[i])
-		channels[i] <- tsArray // Send the partitioned array to the corresponding channel
-		close(channels[i])    // Close the channel after sending the data
+	for i := range channels {
+		channels[i] = make(chan []*prompb.TimeSeries)
+		go prwe.exportWorker(ctx, channels[i], errCh, &wg)
+		channels[i] <- partitionedTS[i] // Send the partitioned array to the corresponding channel
+		close(channels[i])              // Close the channel after sending the data
 	}
 
 	// Wait for all workers to finish
-	for _, ch := range channels {
-		<-ch
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+
+	// Collect errors from the error channel
+	var errs []error
+	for err := range errCh {
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 
-	return nil
+	return multierr.Combine(errs...)
 }
 
 // exportWorker is the worker function that consumes a channel of partitioned time series and performs the export.
-func (prwe *prwExporter) exportWorker(ctx context.Context, tsArrayChan <-chan []*prompb.TimeSeries) error {
+// It sends any encountered error to the error channel.
+func (prwe *prwExporter) exportWorker(ctx context.Context, tsArrayChan <-chan []*prompb.TimeSeries, errCh chan<- error, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	for tsArray := range tsArrayChan {
 		// Create a new map for the partitioned time series.
 		partitionedMap := make(map[string]*prompb.TimeSeries)
@@ -232,26 +246,25 @@ func (prwe *prwExporter) exportWorker(ctx context.Context, tsArrayChan <-chan []
 		// Calls the helper function to convert and batch the partitioned TsMap to the desired format
 		requests, err := batchTimeSeries(partitionedMap, maxBatchByteSize)
 		if err != nil {
-			prwe.wg.Done()
-			return err
-		} else if !prwe.walEnabled() {
+			errCh <- err
+			return
+		}
+
+		if !prwe.walEnabled() {
 			// Perform a direct export otherwise.
 			if err := prwe.export(ctx, requests); err != nil {
-				prwe.wg.Done()
-				return err
+				errCh <- err
 			}
 		} else {
 			// Otherwise, the WAL is enabled, and just persist the requests to the WAL
 			// and they'll be exported in another goroutine to the RemoteWrite endpoint.
 			if err := prwe.wal.persistToWAL(requests); err != nil {
-				prwe.wg.Done()
-				return err
+				errCh <- err
 			}
 		}
 	}
 
-	prwe.wg.Done()
-	return nil
+	errCh <- nil
 }
 
 // export sends a Snappy-compressed WriteRequest containing TimeSeries to a remote write endpoint in order
