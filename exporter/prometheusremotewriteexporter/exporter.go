@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"math"
 	"net/http"
@@ -183,24 +182,11 @@ func tSSignature(labels *[]prompb.Label) string {
 //This function takes a map of time series as input and returns a slice of arrays, each array contains the time series with the same hash value.
 func partitionTimeSeries(tsMap map[string]*prompb.TimeSeries) [][]*prompb.TimeSeries {
 	partitionedTS := make([][]*prompb.TimeSeries, len(tsMap))
+	index := 0
 	for _, ts := range tsMap {
-
-		// Calculate the signature hash of the time series.
-		signature := tSSignature(&ts.Labels)
-
-		// Calculate the hash value based on the signature.
-		hash := crc32.ChecksumIEEE([]byte(signature))
-
-		// Convert the hash value to an integer.
-		hashInt := int(hash)
-
-		// Determine the array index based on the hash value.
-		index := hashInt % len(partitionedTS)
-
-		// Append the time series to the corresponding array.
-		partitionedTS[index] = append(partitionedTS[index], ts)
+		partitionedTS[index] = []*prompb.TimeSeries{ts}
+		index++
 	}
-
 	return partitionedTS
 }
 
