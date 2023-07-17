@@ -206,15 +206,14 @@ func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*pro
 	var wg sync.WaitGroup
 	wg.Add(len(partitionedTS))
 
-	// Create a worker goroutine for each channel.
-	for i := range channels {
+	// Create channels and launch goroutines to process each partition
+	for i := range partitionedTS {
 		channels[i] = make(chan []*prompb.TimeSeries)
 		go prwe.exportWorker(ctx, channels[i], errCh, &wg)
 		channels[i] <- partitionedTS[i] // Send the partitioned array to the corresponding channel
 		close(channels[i])              // Close the channel after sending the data
 	}
 
-	// Wait for all workers to finish
 	go func() {
 		wg.Wait()
 		close(errCh)
@@ -237,29 +236,26 @@ func (prwe *prwExporter) exportWorker(ctx context.Context, tsArrayChan <-chan []
 	defer wg.Done()
 
 	for tsArray := range tsArrayChan {
-		// Create a new map for the partitioned time series.
-		partitionedMap := make(map[string]*prompb.TimeSeries)
+		// Iterate over the partitioned time series sequentially
 		for _, ts := range tsArray {
-			partitionedMap[ts.String()] = ts
-		}
-
-		// Calls the helper function to convert and batch the partitioned TsMap to the desired format
-		requests, err := batchTimeSeries(partitionedMap, maxBatchByteSize)
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		if !prwe.walEnabled() {
-			// Perform a direct export otherwise.
-			if err := prwe.export(ctx, requests); err != nil {
+			// Calls the helper function to convert and batch the time series to the desired format
+			requests, err := batchTimeSeries(map[string]*prompb.TimeSeries{ts.String(): ts}, maxBatchByteSize)
+			if err != nil {
 				errCh <- err
+				return
 			}
-		} else {
-			// Otherwise, the WAL is enabled, and just persist the requests to the WAL
-			// and they'll be exported in another goroutine to the RemoteWrite endpoint.
-			if err := prwe.wal.persistToWAL(requests); err != nil {
-				errCh <- err
+
+			if !prwe.walEnabled() {
+				// Perform a direct export otherwise.
+				if err := prwe.export(ctx, requests); err != nil {
+					errCh <- err
+				}
+			} else {
+				// Otherwise, the WAL is enabled, and just persist the requests to the WAL
+				// and they'll be exported in another goroutine to the RemoteWrite endpoint.
+				if err := prwe.wal.persistToWAL(requests); err != nil {
+					errCh <- err
+				}
 			}
 		}
 	}
