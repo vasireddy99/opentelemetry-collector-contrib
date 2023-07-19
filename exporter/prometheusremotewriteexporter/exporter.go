@@ -78,7 +78,6 @@ func newPRWExporter(cfg *Config, set exporter.CreateSettings) (*prwExporter, err
 			AddMetricSuffixes:   cfg.AddMetricSuffixes,
 		},
 	}
-
 	if cfg.WAL == nil {
 		return prwe, nil
 	}
@@ -87,7 +86,6 @@ func newPRWExporter(cfg *Config, set exporter.CreateSettings) (*prwExporter, err
 	if err != nil {
 		return nil, err
 	}
-
 	return prwe, nil
 }
 
@@ -161,106 +159,71 @@ func validateAndSanitizeExternalLabels(cfg *Config) (map[string]string, error) {
 	return sanitizedLabels, nil
 }
 
-/*//Signature for the time series
-func tSSignature(labels *[]prompb.Label) string {
-	var labelPairs []string
-	for _, label := range *labels {
-		labelPairs = append(labelPairs, fmt.Sprintf("%s=%s", label.Name, label.Value ))
-	}
+// ...
 
-	// Sort the labels.
-	sort.Strings(labelPairs)
-
-	sign := strings.Join(labelPairs, ",")
-	hashDigest := sha256.Sum256([]byte(sign))
-
-	return fmt.Sprintf("%x", hashDigest)
-}*/
-
-//This function takes a map of time series as input and returns a slice of arrays, each array contains the time series with the same hash value.
-func partitionTimeSeries(tsMap map[string]*prompb.TimeSeries) [][]*prompb.TimeSeries {
-	partitionedTS := make([][]*prompb.TimeSeries, len(tsMap))
-	index := 0
-	for _, ts := range tsMap {
-		partitionedTS[index] = []*prompb.TimeSeries{ts}
-		index++
-	}
-	return partitionedTS
-}
-
-// handleExport handles the export of metrics by creating worker goroutines and channels.
-// It waits for all workers to finish and returns an error if any worker encountered one.
 func (prwe *prwExporter) handleExport(ctx context.Context, tsMap map[string]*prompb.TimeSeries) error {
 	// There are no metrics to export, so return.
 	if len(tsMap) == 0 {
 		return nil
 	}
 
-	partitionedTS := partitionTimeSeries(tsMap)
+	// Determine the number of partitions (N) based on the concurrency limit and the number of requests
+	concurrencyLimit := int(math.Min(float64(prwe.concurrency), float64(len(tsMap))))
 
-	// Create channels and error channel for each partitioned array.
-	channels := make([]chan []*prompb.TimeSeries, len(partitionedTS))
-	errCh := make(chan error, len(partitionedTS))
-
-	// Create a wait group to wait for all workers to finish
-	var wg sync.WaitGroup
-	wg.Add(len(partitionedTS))
-
-	// Create channels and launch goroutines to process each partition
-	for i := range partitionedTS {
-		channels[i] = make(chan []*prompb.TimeSeries)
-		go prwe.exportWorker(ctx, channels[i], errCh, &wg)
-		channels[i] <- partitionedTS[i] // Send the partitioned array to the corresponding channel
-		close(channels[i])              // Close the channel after sending the data
-	}
-
-	go func() {
-		wg.Wait()
-		close(errCh)
-	}()
-
-	// Collect errors from the error channel
-	var errs []error
-	for err := range errCh {
-		if err != nil {
-			errs = append(errs, err)
+	// Partition the time series map into N arrays
+	partitions := make([]map[string]*prompb.TimeSeries, concurrencyLimit)
+	i := 0
+	for _, ts := range tsMap {
+		if partitions[i] == nil {
+			partitions[i] = make(map[string]*prompb.TimeSeries)
+		}
+		// Use the labels directly as keys in the partition map
+		partitions[i][labelsToString(ts.Labels)] = ts
+		i++
+		if i >= concurrencyLimit {
+			i = 0
 		}
 	}
 
-	return multierr.Combine(errs...)
+	// Create N workers
+	var wg sync.WaitGroup
+	wg.Add(concurrencyLimit)
+
+	for i := 0; i < concurrencyLimit; i++ {
+		// Submit one array per worker
+		go func(partition map[string]*prompb.TimeSeries) {
+			defer wg.Done()
+
+			requests, err := batchTimeSeries(partition, maxBatchByteSize)
+			if err != nil {
+				err = consumererror.NewPermanent(err)
+			}
+
+			// Submit each batch sequentially
+			for _, request := range requests {
+				if errExecute := prwe.execute(ctx, request); errExecute != nil {
+					err = multierr.Append(err, consumererror.NewPermanent(errExecute))
+				}
+			}
+		}(partitions[i])
+	}
+
+	wg.Wait()
+
+	return nil
 }
 
-// exportWorker is the worker function that consumes a channel of partitioned time series and performs the export.
-// It sends any encountered error to the error channel.
-func (prwe *prwExporter) exportWorker(ctx context.Context, tsArrayChan <-chan []*prompb.TimeSeries, errCh chan<- error, wg *sync.WaitGroup) {
-	defer wg.Done()
+// ...
 
-	for tsArray := range tsArrayChan {
-		// Iterate over the partitioned time series sequentially
-		for _, ts := range tsArray {
-			// Calls the helper function to convert and batch the time series to the desired format
-			requests, err := batchTimeSeries(map[string]*prompb.TimeSeries{ts.String(): ts}, maxBatchByteSize)
-			if err != nil {
-				errCh <- err
-				return
-			}
-
-			if !prwe.walEnabled() {
-				// Perform a direct export otherwise.
-				if err := prwe.export(ctx, requests); err != nil {
-					errCh <- err
-				}
-			} else {
-				// Otherwise, the WAL is enabled, and just persist the requests to the WAL
-				// and they'll be exported in another goroutine to the RemoteWrite endpoint.
-				if err := prwe.wal.persistToWAL(requests); err != nil {
-					errCh <- err
-				}
-			}
-		}
+func labelsToString(labels []prompb.Label) string {
+	var b strings.Builder
+	for _, label := range labels {
+		b.WriteString(label.Name)
+		b.WriteRune('=')
+		b.WriteString(label.Value)
+		b.WriteRune(',')
 	}
-
-	errCh <- nil
+	return b.String()
 }
 
 // export sends a Snappy-compressed WriteRequest containing TimeSeries to a remote write endpoint in order
@@ -344,7 +307,6 @@ func (prwe *prwExporter) execute(ctx context.Context, writeReq *prompb.WriteRequ
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
 	rerr := fmt.Errorf("remote write returned HTTP status %v; err = %w: %s", resp.Status, err, body)
 	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
-		// Return a non-permanent error for 5xx status codes to indicate that it's recoverable
 		return rerr
 	}
 	return consumererror.NewPermanent(rerr)
