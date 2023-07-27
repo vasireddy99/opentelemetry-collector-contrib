@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
@@ -98,6 +99,8 @@ func (prwe *prwExporter) Start(ctx context.Context, host component.Host) (err er
 
 	// Set the HTTP client as the underlying client for the retryable client
 	prwe.client.HTTPClient = httpClient
+	prwe.client.RetryWaitMin = 1 * time.Millisecond
+	prwe.client.RetryWaitMax = 5 * time.Millisecond
 
 	return prwe.turnOnWALIfEnabled(contextWithLogger(ctx, prwe.settings.Logger.Named("prw.wal")))
 }
