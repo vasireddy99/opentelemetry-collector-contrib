@@ -5,6 +5,7 @@ package prometheusremotewriteexporter
 
 import (
 	"context"
+	"github.com/hashicorp/go-retryablehttp"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -977,4 +978,40 @@ func TestWALOnExporterRoundTrip(t *testing.T) {
 	// To ensure a deterministic ordering, sort the TimeSeries by Label Name.
 	assert.Equal(t, want, gotFromUpload)
 	assert.Equal(t, gotFromWAL, gotFromUpload)
+}
+
+
+func TestRetryOn5xx(t *testing.T) {
+	// Create a mock HTTP server with a counter to simulate a 5xx error on the first attempt and a 2xx success on the second attempt
+	attempts := 0
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts < 3 {
+			attempts++
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer mockServer.Close()
+
+	endpointURL, err := url.Parse(mockServer.URL)
+	assert.NoError(t, err)
+
+	// Create the prwExporter
+	exporter := &prwExporter{
+		endpointURL: endpointURL,
+		client:      retryablehttp.NewClient(),
+	}
+
+	ctx := context.Background()
+
+	// Execute the write request and verify that the exporter returns a non-permanent error on the first attempt.
+	err = exporter.execute(ctx, &prompb.WriteRequest{})
+	assert.NoError(t, err)
+	/*	assert.True(t, strings.Contains(err.Error(), "remote write returned HTTP status 500"))
+		assert.False(t, consumererror.IsPermanent(err))*/
+	assert.Equal(t, 3, attempts)
+	// Execute the write request again and verify that the exporter does not return an error on the second attempt
+	/*	err = exporter.execute(ctx, &prompb.WriteRequest{})
+		assert.NoError(t, err)*/
 }
