@@ -2960,7 +2960,7 @@ func testConverter(t *testing.T, mapping map[string]string) *MetricsConverter {
 	tr, err := NewMetricTranslator(rules, 1)
 	require.NoError(t, err)
 
-	c, err := NewMetricsConverter(zap.NewNop(), tr, nil, nil, "", false, true)
+	c, err := NewMetricsConverter(zap.NewNop(), tr, nil, nil, "", false)
 	require.NoError(t, err)
 	return c
 }

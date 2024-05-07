@@ -205,7 +205,6 @@ func TestGetDimensionUpdateFromMetadata(t *testing.T) {
 				nil,
 				"-_.",
 				false,
-				true,
 			)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, getDimensionUpdateFromMetadata(tt.args.metadata, *converter))
